@@ -1,0 +1,210 @@
+import psycopg2
+import json
+import time
+import os
+
+if os.name == 'nt':
+    os.system('') 
+
+def conectar():
+    return psycopg2.connect(host="localhost", database="postgres", user="postgres", password="1997")
+
+# --- FUNÇÕES DO SISTEMA ---
+
+def fazer_login():
+    while True:
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print("=== 🧙 PORTAL DE ACESSO DO MAGO CONCURSEIRO ===")
+        nome = input("Digite seu nome de usuário: ").strip()
+        
+        if not nome:
+            print("\033[91m⚠️ Erro: tente novamente!\033[0m")
+            time.sleep(2)
+            continue
+
+        try:
+            conexao = conectar()
+            cursor = conexao.cursor()
+            cursor.execute("SELECT id, nome, permissao FROM usuarios WHERE nome = %s", (nome,))
+            usuario = cursor.fetchone()
+            cursor.close()
+            conexao.close()
+
+            if usuario:
+                id_user, nome_real, permissao_raw = usuario
+                # Blindagem total da permissão
+                permissao = str(permissao_raw).strip().lower() if permissao_raw else "aluno"
+                
+                print(f"\033[92m✨ Bem-vindo de volta, {nome_real}!\033[0m")
+                time.sleep(1)
+                return id_user, nome_real, permissao 
+            else:
+                print("\033[91m❌ Erro: Usuário não encontrado!\033[0m")
+                time.sleep(2)
+        except Exception as e:
+            print(f"Erro na conexão: {e}")
+            time.sleep(3)
+
+def salvar_ponto(id_usuario):
+    try:
+        conexao = conectar()
+        cursor = conexao.cursor()
+        cursor.execute("UPDATE usuarios SET pontuacao_total = pontuacao_total + 1 WHERE id = %s", (id_usuario,))
+        conexao.commit()
+        cursor.close()
+        conexao.close()
+    except Exception as e:
+        print(f"Erro ao salvar ponto: {e}")
+
+def salvar_erro(id_usuario, enunciado, materia):
+    try:
+        conexao = conectar()
+        cursor = conexao.cursor()
+        sql = "INSERT INTO historico_erros (nome_usuario, questao_enunciado, materia) VALUES ((SELECT nome FROM usuarios WHERE id=%s), %s, %s)"
+        cursor.execute(sql, (id_usuario, enunciado, materia))
+        conexao.commit() 
+        cursor.close()
+        conexao.close()
+        print("\033[93m📖 Questão salva no seu CADERNO DE ERROS!\033[0m")
+    except Exception as e:
+        print(f"Erro ao salvar histórico: {e}")
+
+def ver_placar(id_usuario):
+    try:
+        conexao = conectar()
+        cursor = conexao.cursor()
+        cursor.execute("SELECT pontuacao_total FROM usuarios WHERE id = %s", (id_usuario,))
+        resultado = cursor.fetchone() 
+        cursor.close()
+        conexao.close()
+        return resultado[0] if resultado else 0
+    except:
+        return 0
+
+def ver_ranking():
+    try:
+        conexao = conectar()
+        cursor = conexao.cursor()
+        cursor.execute("SELECT nome, pontuacao_total FROM usuarios ORDER BY pontuacao_total DESC LIMIT 3;")
+        top_alunos = cursor.fetchall()
+        cursor.close()
+        conexao.close()
+        print("\n🏆" + "="*30 + "🏆\n      RANKING DE ELITE      \n" + "="*32)
+        for i, aluno in enumerate(top_alunos, 1):
+            print(f"{i}º Lugar: {aluno[0]} - {aluno[1]} Pontos")
+        input("\nPressione ENTER para voltar...")
+    except Exception as e:
+        print(f"Erro no ranking: {e}")
+
+def buscar_questao(materia_escolhida, id_usuario):
+    try:
+        conexao = conectar()
+        cursor = conexao.cursor()
+        sql = "SELECT enunciado, alternativas, gabarito FROM questoes WHERE materia = %s ORDER BY RANDOM() LIMIT 1"
+        cursor.execute(sql, (materia_escolhida,))
+        questao = cursor.fetchone()
+        
+        if questao:
+            print(f"\n--- {materia_escolhida.upper()} ---")
+            print(f"PERGUNTA: {questao[0]}")
+            print("\nOPÇÕES:")
+            for op_txt in questao[1]: print(op_txt)
+            
+            inicio = time.time()
+            res = input("\nSua resposta (A/B/C/D/E): ").strip().upper()
+            tempo = time.time() - inicio
+            
+            if tempo > 15: 
+                print(f"⏰ TEMPO ESGOTADO! ({tempo:.2f}s)")
+            elif res == questao[2].upper():
+                print(f"\033[92m ✨ ACERTOU! ({tempo:.2f}s) \033[0m")
+                salvar_ponto(id_usuario)
+            else:
+                print(f"\033[91m ❌ ERROU! Gabarito: {questao[2]} \033[0m")
+                salvar_erro(id_usuario, questao[0], materia_escolhida)
+            input("\nENTER para voltar...")
+        cursor.close()
+        conexao.close()
+    except Exception as e:
+        print(f"Erro: {e}")
+
+def ver_caderno_erros(id_usuario, nome_usuario):
+    try:
+        conexao = conectar()
+        cursor = conexao.cursor()
+        cursor.execute("SELECT materia, questao_enunciado FROM historico_erros WHERE nome_usuario = %s ORDER BY data_erro DESC LIMIT 5", (nome_usuario,))
+        erros = cursor.fetchall()
+        cursor.close()
+        conexao.close()
+
+        print("\n📚" + "="*35 + "📚")
+        print(f"   CADERNO DE ERROS: {nome_usuario.upper()}   ")
+        print("="*39)
+        if not erros:
+            print("✨ Sem erros registrados!")
+        else:
+            for i, erro in enumerate(erros, 1):
+                print(f"{i}. [{erro[0]}] - {erro[1][:60]}...") 
+        input("\nENTER para voltar...")
+    except Exception as e:
+        print(f"Erro ao ler caderno: {e}")
+
+def deletar_usuario_teste(nome_alvo):
+    try:
+        conexao = conectar()
+        cursor = conexao.cursor()
+        cursor.execute("DELETE FROM usuarios WHERE nome = %s AND permissao != 'admin'", (nome_alvo,))
+        conexao.commit()
+        if cursor.rowcount > 0:
+            print(f"\n\033[92m✅ Usuário '{nome_alvo}' deletado!\033[0m")
+        else:
+            print(f"\n\033[91m❌ Falha ao deletar.\033[0m")
+        cursor.close()
+        conexao.close()
+        time.sleep(2)
+    except Exception as e:
+        print(f"Erro: {e}")
+
+# --- EXECUÇÃO DO APP (Onde a mágica começa) ---
+
+# Passo único: logar e pegar permissão
+id_logado, usuario_logado, nivel_permissao = fazer_login() 
+
+while True:
+    os.system('cls' if os.name == 'nt' else 'clear')
+    placar_atual = ver_placar(id_logado) 
+    
+    print("\n" + "="*40)
+    print(f"🧙 MAGO: {usuario_logado.upper()} | 🏆 PLACAR: {placar_atual}")
+    print("="*40)
+    print("1. PORTUGUÊS")
+    print("2. MATEMÁTICA")
+    print("3. RANKING DE ELITE (TOP 3)")
+    print("4. MEU CADERNO DE ERROS 📚")
+    print("5. SAIR DO APP")
+    
+    if nivel_permissao == 'admin':
+        print("\033[91m9. [PAINEL MESTRE] - LIMPAR TESTES 💀\033[0m")
+
+    print("="*40)
+    op = input("\nEscolha: ")
+
+    if op == "1":
+        buscar_questao("Português", id_logado)
+    elif op == "2":
+        buscar_questao("Matemática", id_logado)
+    elif op == "3":
+        ver_ranking()
+    elif op == "4":
+        ver_caderno_erros(id_logado, usuario_logado)
+    elif op == "5":
+        print(f"\n✨ Até logo, {usuario_logado}!")
+        break
+    elif op == "9" and nivel_permissao == 'admin':
+        nome_lixo = input("Nome do usuário para DELETAR: ").strip()
+        confirmar = input(f"Confirmar exclusão de {nome_lixo}? (S/N): ").upper()
+        if confirmar == 'S':
+            deletar_usuario_teste(nome_lixo)
+    else:
+        print("\n⚠️ Opção inválida!")
+        time.sleep(1)
