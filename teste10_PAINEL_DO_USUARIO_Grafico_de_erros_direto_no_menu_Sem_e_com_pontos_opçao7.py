@@ -1,279 +1,156 @@
 import psycopg2
+import psycopg2.extras
 import json
 import time
 import os
-import matplotlib.pyplot as plt # <--- ADICIONE ESTA LINHA AQUI
+import textwrap
+import re
+import matplotlib.pyplot as plt
 
-if os.name == 'nt':
-    os.system('') 
+# === CONFIGURAÇÕES GERAIS ===
+DB_CONFIG = {"host": "localhost", "database": "postgres", "user": "postgres", "password": "1997"}
+
+def limpar_tela(): 
+    os.system('cls' if os.name == 'nt' else 'clear')
 
 def conectar():
-    return psycopg2.connect(host="localhost", database="postgres", user="postgres", password="1997")
+    return psycopg2.connect(**DB_CONFIG)
 
-# --- FUNÇÕES DO SISTEMA ---
+def organizar_texto(texto):
+    if not texto: return ""
+    texto = re.sub(r'(\w+)-\s+(\w+)', r'\1\2', texto)
+    texto = " ".join(texto.split())
+    texto = re.sub(r'^\d+[\.\-\s]+', '', texto)
+    return texto.replace("Assinale a opção", "\n\nAssinale a opção")
 
-def fazer_login():
+# --- BUSCA DINÂMICA DE MATÉRIAS (VERSÃO BLINDADA) ---
+def obter_materias_por_banca(banca):
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        # Buscamos as matérias removendo espaços e garantindo que não venham nulas
+        sql = "SELECT DISTINCT TRIM(materia) FROM questoes WHERE banca ILIKE %s AND materia IS NOT NULL ORDER BY 1"
+        cur.execute(sql, (f'%{banca}%',))
+        
+        # O fetchall retorna tuplas, extraímos o primeiro elemento [0] de cada uma
+        rows = cur.fetchall()
+        materias = [row[0] for row in rows if row[0]]
+        
+        conn.close()
+        return materias
+    except Exception as e:
+        print(f"Erro ao acessar banco: {e}")
+        return []
+
+# --- MOTOR DE BUSCA DE QUESTÕES ---
+def buscar_questao(materia_nome, id_usuario, banca_escolhida):
+    try:
+        conn = conectar()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # ILIKE garante que encontre mesmo com diferenças de maiúsculas/minúsculas
+        sql = """SELECT * FROM questoes 
+                 WHERE banca ILIKE %s AND materia ILIKE %s 
+                 AND LENGTH(enunciado) > 50 
+                 ORDER BY RANDOM() LIMIT 1"""
+        cur.execute(sql, (f'%{banca_escolhida}%', f'%{materia_nome}%'))
+        q = cur.fetchone()
+        conn.close()
+
+        if not q:
+            print(f"\n\033[1;31m⚠️ QUESTÃO NÃO ENCONTRADA.\033[0m")
+            time.sleep(2); return
+
+        limpar_tela()
+        print(f"\033[1;33m[ BANCO: {q['banca']} ]\033[0m")
+        print(f"\033[0;36mMATÉRIA: {q['materia'].upper()}\033[0m")
+        print("="*75)
+        
+        enun = organizar_texto(q['enunciado'])
+        print(textwrap.fill(enun, width=75))
+        print("\n" + "="*75)
+
+        opts = q['alternativas']
+        if isinstance(opts, str): opts = json.loads(opts)
+        for letra in sorted(opts.keys()): 
+            print(f"  \033[1m{letra})\033[0m {organizar_texto(opts[letra])}")
+        
+        print("="*75)
+        res_user = input("👉 SUA RESPOSTA: ").strip().upper()
+
+        if res_user == q['gabarito'].upper():
+            print("\n\033[1;32m✔ ACERTOU!\033[0m")
+            salvar_progresso(id_usuario, True)
+        else:
+            print(f"\n\033[1;31m✘ ERROU. Gabarito: {q['gabarito']}\033[0m")
+            salvar_progresso(id_usuario, False, enun, q['materia'])
+        
+        input("\n[Pressione ENTER]")
+    except Exception as e: print(f"❌ Erro: {e}"); time.sleep(2)
+
+# --- FUNÇÕES DE APOIO ---
+def salvar_progresso(id_u, acertou, enun=None, mat=None):
+    try:
+        conn = conectar(); cur = conn.cursor()
+        if acertou:
+            cur.execute("UPDATE usuarios SET pontuacao_total = pontuacao_total + 1 WHERE id = %s", (id_u,))
+        elif enun and mat:
+            cur.execute("INSERT INTO historico_erros (usuario_id, questao_enunciado, materia) VALUES (%s, %s, %s)", (id_u, enun[:500], mat))
+        conn.commit(); conn.close()
+    except: pass
+
+# --- MENU PRINCIPAL ---
+def menu():
+    # Login rápido
+    limpar_tela()
+    print("\033[1;34m=== PRIMATA QUEST - LOGIN ===\033[0m")
+    nome_input = input("USUÁRIO: ").strip()
+    
+    conn = conectar()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT id, nome FROM usuarios WHERE nome ILIKE %s", (nome_input,))
+    user = cur.fetchone()
+    conn.close()
+
+    if not user:
+        print("❌ Usuário não encontrado."); return
+    
+    bancas = ["FGV", "SELECON", "CESPE", "FCC"]
+    idx_banca = 0
+
     while True:
-        os.system('cls' if os.name == 'nt' else 'clear')
-        print("=== 🧙 PORTAL DE ACESSO DO MAGO CONCURSEIRO ===")
-        nome = input("Digite seu nome de usuário: ").strip()
+        banca_atual = bancas[idx_banca]
+        # Carregamos as matérias reais do banco para esta banca
+        materias_reais = obter_materias_por_banca(banca_atual)
         
-        if not nome:
-            print("\033[91m⚠️ Erro: tente novamente!\033[0m")
-            time.sleep(2)
-            continue
+        limpar_tela()
+        print(f"\033[1;37mUSUÁRIO: {user['nome'].upper()} | BANCA: \033[1;32m{banca_atual}\033[0m")
+        print("="*75)
+        print(" [B] ALTERAR BANCA")
+        print("-" * 75)
+        
+        if not materias_reais:
+            print(f"  ⚠️ Nenhuma matéria cadastrada para {banca_atual}.")
+            print("  Verifique se o nome da banca no banco de dados está correto.")
+        else:
+            for i, mat in enumerate(materias_reais, 1):
+                # Exibe matérias em duas colunas
+                print(f" [{i}] {mat.upper()[:25]:<28}", end="\n" if i % 2 == 0 else "")
+            print()
 
-        try:
-            conexao = conectar()
-            cursor = conexao.cursor()
-            cursor.execute("SELECT id, nome, permissao FROM usuarios WHERE nome = %s", (nome,))
-            usuario = cursor.fetchone()
-            cursor.close()
-            conexao.close()
-
-            if usuario:
-                id_user, nome_real, permissao_raw = usuario
-                # Blindagem total da permissão
-                permissao = str(permissao_raw).strip().lower() if permissao_raw else "aluno"
-                
-                print(f"\033[92m✨ Bem-vindo de volta, {nome_real}!\033[0m")
-                time.sleep(1)
-                return id_user, nome_real, permissao 
+        print("-" * 75)
+        print(" [0] SAIR")
+        print("="*75)
+        
+        esc = input("ESCOLHA UMA OPÇÃO: ").upper().strip()
+        
+        if esc == '0': break
+        elif esc == 'B': idx_banca = (idx_banca + 1) % len(bancas)
+        elif esc.isdigit():
+            idx = int(esc) - 1
+            if 0 <= idx < len(materias_reais):
+                buscar_questao(materias_reais[idx], user['id'], banca_atual)
             else:
-                print("\033[91m❌ Erro: Usuário não encontrado!\033[0m")
-                time.sleep(2)
-        except Exception as e:
-            print(f"Erro na conexão: {e}")
-            time.sleep(3)
+                print("Opção inválida!"); time.sleep(1)
 
-def salvar_ponto(id_usuario):
-    try:
-        conexao = conectar()
-        cursor = conexao.cursor()
-        cursor.execute("UPDATE usuarios SET pontuacao_total = pontuacao_total + 1 WHERE id = %s", (id_usuario,))
-        conexao.commit()
-        cursor.close()
-        conexao.close()
-    except Exception as e:
-        print(f"Erro ao salvar ponto: {e}")
-
-def salvar_erro(id_usuario, enunciado, materia):
-    try:
-        conexao = conectar()
-        cursor = conexao.cursor()
-        
-        # Note que passamos o id_usuario duas vezes: 
-        # 1. Para buscar o nome do usuário
-        # 2. Para preencher a coluna usuario_id que você criou
-        sql = """INSERT INTO historico_erros (nome_usuario, questao_enunciado, materia, usuario_id) 
-                 VALUES ((SELECT nome FROM usuarios WHERE id=%s), %s, %s, %s)"""
-        
-        cursor.execute(sql, (id_usuario, enunciado, materia, id_usuario))
-        
-        conexao.commit() 
-        cursor.close()
-        conexao.close()
-        print("\033[93m📖 Questão salva no seu CADERNO DE ERROS!\033[0m")
-    except Exception as e:
-        print(f"❌ Erro ao salvar no banco: {e}")
-
-
-def ver_placar(id_usuario):
-    try:
-        conexao = conectar()
-        cursor = conexao.cursor()
-        cursor.execute("SELECT pontuacao_total FROM usuarios WHERE id = %s", (id_usuario,))
-        resultado = cursor.fetchone() 
-        cursor.close()
-        conexao.close()
-        return resultado[0] if resultado else 0
-    except:
-        return 0
-
-def ver_ranking():
-    try:
-        conexao = conectar()
-        cursor = conexao.cursor()
-        cursor.execute("SELECT nome, pontuacao_total FROM usuarios ORDER BY pontuacao_total DESC LIMIT 3;")
-        top_alunos = cursor.fetchall()
-        cursor.close()
-        conexao.close()
-        print("\n🏆" + "="*30 + "🏆\n      RANKING DE ELITE      \n" + "="*32)
-        for i, aluno in enumerate(top_alunos, 1):
-            print(f"{i}º Lugar: {aluno[0]} - {aluno[1]} Pontos")
-        input("\nPressione ENTER para voltar...")
-    except Exception as e:
-        print(f"Erro no ranking: {e}")
-
-def buscar_questao(materia_escolhida, id_usuario):
-    try:
-        conexao = conectar()
-        cursor = conexao.cursor()
-        sql = "SELECT enunciado, alternativas, gabarito FROM questoes WHERE materia = %s ORDER BY RANDOM() LIMIT 1"
-        cursor.execute(sql, (materia_escolhida,))
-        questao = cursor.fetchone()
-        
-        if questao:
-            print(f"\n--- {materia_escolhida.upper()} ---")
-            print(f"PERGUNTA: {questao[0]}")
-            print("\nOPÇÕES:")
-            for op_txt in questao[1]: print(op_txt)
-            
-            inicio = time.time()
-            res = input("\nSua resposta (A/B/C/D/E): ").strip().upper()
-            tempo = time.time() - inicio
-            
-            if tempo > 15: 
-                print(f"⏰ TEMPO ESGOTADO! ({tempo:.2f}s)")
-            elif res == questao[2].upper():
-                print(f"\033[92m ✨ ACERTOU! ({tempo:.2f}s) \033[0m")
-                salvar_ponto(id_usuario)
-            else:
-                print(f"\033[91m ❌ ERROU! Gabarito: {questao[2]} \033[0m")
-                salvar_erro(id_usuario, questao[0], materia_escolhida)
-            input("\nENTER para voltar...")
-        cursor.close()
-        conexao.close()
-    except Exception as e:
-        print(f"Erro: {e}")
-
-def ver_caderno_erros(id_usuario, nome_usuario):
-    try:
-        conexao = conectar()
-        cursor = conexao.cursor()
-        cursor.execute("SELECT materia, questao_enunciado FROM historico_erros WHERE usuario_id = %s ORDER BY data_erro DESC LIMIT 5", (id_usuario,))
-        erros = cursor.fetchall()
-        cursor.close()
-        conexao.close()
-
-        print("\n📚" + "="*35 + "📚")
-        print(f"   CADERNO DE ERROS: {nome_usuario.upper()}   ")
-        print("="*39)
-        if not erros:
-            print("✨ Sem erros registrados!")
-        else:
-            for i, erro in enumerate(erros, 1):
-                print(f"{i}. [{erro[0]}] - {erro[1][:60]}...") 
-        input("\nENTER para voltar...")
-    except Exception as e:
-        print(f"Erro ao ler caderno: {e}")
-
-def deletar_usuario_teste(nome_alvo):
-    try:
-        conexao = conectar()
-        cursor = conexao.cursor()
-        cursor.execute("DELETE FROM usuarios WHERE nome = %s AND permissao != 'admin'", (nome_alvo,))
-        conexao.commit()
-        if cursor.rowcount > 0:
-            print(f"\n\033[92m✅ Usuário '{nome_alvo}' deletado!\033[0m")
-        else:
-            print(f"\n\033[91m❌ Falha ao deletar.\033[0m")
-        cursor.close()
-        conexao.close()
-        time.sleep(2)
-    except Exception as e:
-        print(f"Erro: {e}")
-
-
-def mostrar_mapa_de_erros(id_user, nome_user):
-    try:
-        # --- PARTE 1: BUSCA OS DADOS NO BANCO ---
-        conexao = conectar()
-        cursor = conexao.cursor()
-        query = "SELECT materia, COUNT(*) FROM historico_erros WHERE usuario_id = %s GROUP BY materia"
-        cursor.execute(query, (id_user,))
-        dados = cursor.fetchall()
-        cursor.close()
-        conexao.close()
-
-        # --- PARTE 2: PREPARA O GRÁFICO ---
-        plt.figure(figsize=(10, 6))
-        
-        if not dados:
-            # Lógica de Gênero que você pediu (Cara Concurseira)
-            fem = nome_user.lower().endswith('a') or "wendy" in nome_user.lower()
-            titulo = "Cara Concurseira" if fem else "Caro Concurseiro"
-            
-            plt.text(0.5, 0.5, f"✨ {titulo}, {nome_user}!\nVocê ainda não possui erros registrados.", 
-                     fontsize=12, ha='center', va='center', fontweight='bold')
-            plt.title(f"MAPA DE DESEMPENHO: {nome_user.upper()}")
-            plt.axis('off') 
-        else:
-            # --- PARTE 2 (AJUSTADA PARA VERMELHO) ---
-            materias = [item[0] for item in dados]
-            quantidades = [item[1] for item in dados]
-            
-            # Mudamos de uma lista de cores para uma cor única: VERMELHO
-            plt.bar(materias, quantidades, color='#e63946', edgecolor='black', linewidth=1.2)
-            
-            # Dica de Professor: Adiciona o número de erros no topo da barra
-            for i, valor in enumerate(quantidades):
-                plt.text(i, valor + 0.1, str(valor), ha='center', fontweight='bold', color='red')
-
-            plt.ylabel("Quantidade de Erros")
-            plt.title(f"🚨 MAPA DE ERROS: {nome_user.upper()}", color='#9d0208', fontsize=14)
-
-            plt.title(f"GRAFICO DE ERROS - DESEMPENHO: {nome_user.upper()}")
-
-        # --- PARTE 3: MOSTRA E LIMPA ---
-        print(f"\033[94m🎨 Abrindo mapa de desempenho de {nome_user}...\033[0m")
-        plt.show()
-        plt.close() # Importante para não travar o próximo gráfico!
-
-    except Exception as e:
-        print(f"Erro visual: {e}")
-
-
-
-
-
-# --- EXECUÇÃO DO APP (Onde a mágica começa) ---
-
-# Passo único: logar e pegar permissão
-id_logado, usuario_logado, nivel_permissao = fazer_login() 
-
-while True:
-    os.system('cls' if os.name == 'nt' else 'clear')
-    placar_atual = ver_placar(id_logado) 
-    
-    print("\n" + "="*40)
-    print(f"🧙 MAGO: {usuario_logado.upper()} | 🏆 PLACAR: {placar_atual}")
-    print("="*40)
-    print("1. PORTUGUÊS")
-    print("2. MATEMÁTICA")
-    print("3. RANKING DE ELITE (TOP 3)")
-    print("4. MEU CADERNO DE ERROS 📚")
-    print("5. SAIR DO APP")
-    print("7. VER MEU DESEMPENHO (GRÁFICO) 📊") # <--- NOVA OPÇÃO
-    
-
-    
-    
-    if nivel_permissao == 'admin':
-        print("\033[91m9. [PAINEL DELETAR USUARIO] - SOMENTE ADMINISTRADOR 💀\033[0m")
-
-    print("="*40)
-    op = input("\nEscolha: ")
-
-    if op == "1":
-        buscar_questao("Português", id_logado)
-    elif op == "2":
-        buscar_questao("Matemática", id_logado)
-    elif op == "3":
-        ver_ranking()
-    elif op == "4":
-        ver_caderno_erros(id_logado, usuario_logado)
-    elif op == "7":
-        # Passamos o ID e o Nome para a função ser completa
-        mostrar_mapa_de_erros(id_logado, usuario_logado)  # <--- CHAMA A FUNÇÃO
-    elif op == "5":
-        print(f"\n✨ Até logo, {usuario_logado}!")
-        break
-    elif op == "9" and nivel_permissao == 'admin':
-        nome_lixo = input("Nome do usuário para DELETAR: ").strip()
-        confirmar = input(f"Confirmar exclusão de {nome_lixo}? (S/N): ").upper()
-        if confirmar == 'S':
-            deletar_usuario_teste(nome_lixo)
-    else:
-        print("\n⚠️ Opção inválida!")
-        time.sleep(1)
+if __name__ == "__main__":
+    menu()
