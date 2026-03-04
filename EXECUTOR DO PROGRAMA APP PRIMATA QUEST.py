@@ -224,7 +224,7 @@ def mostrar_grafico(id_user, nome):
 def login():
     while True:
         limpar_tela()
-        print("=== 🧙 PORTAL DO MAGO CONCURSEIRO ===")
+        print("=== PRIMATA QUEST - SEU APP DA EVOLUÇÃO ===")
         nome = input("Usuário: ").strip()
         with conectar() as conn:
             with conn.cursor() as cur:
