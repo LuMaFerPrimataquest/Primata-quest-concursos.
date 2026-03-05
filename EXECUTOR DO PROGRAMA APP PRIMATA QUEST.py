@@ -109,16 +109,25 @@ def executar_simulado_10(id_user):
 def painel_estudos(id_user):
     limpar_tela()
     print("=== 🔍 FILTRAR POR BANCA ===")
-    print("1. FGV | 2. SELECON | 3. VOLTAR")
-    print("\033[93m4. 🔥 SIMULADO (10 QUESTÕES ALEATÓRIAS)\033[0m")
+    print("1. FGV | 2. SELECON | 3. FCC | 4. VOLTAR") # FCC Adicionada
+    print("\033[93m5. 🔥 SIMULADO (10 QUESTÕES ALEATÓRIAS)\033[0m")
     
     b_op = input("\nEscolha: ")
-    if b_op == "3": return
-    if b_op == "4":
+    if b_op == "4": return
+    if b_op == "5":
         executar_simulado_10(id_user)
         return
         
-    banca = "FGV" if b_op == "1" else "SELECON"
+    # Mapeamento para as 3 bancas
+    if b_op == "1":
+        banca = "FGV"
+    elif b_op == "2":
+        banca = "SELECON"
+    elif b_op == "3":
+        banca = "FCC"
+    else:
+        return
+
     try:
         with conectar() as conn:
             with conn.cursor() as cur:
@@ -136,36 +145,204 @@ def painel_estudos(id_user):
         executar_questao(materias[m_sel], banca, id_user)
     except: pass
 
-def executar_questao(materia, banca, id_user):
+# === 3. FUNÇÕES DE ESTUDO E SIMULADO (OPÇÃO 1) ===
+
+# === 3. FUNÇÕES DE ESTUDO E SIMULADO (OPÇÃO 1) ===
+
+def painel_estudos(id_user):
+    limpar_tela()
+    print("=== 🔍 FILTRAR POR BANCA ===")
+    print("1. FGV | 2. SELECON | 3. FCC | 4. VOLTAR")
+    print("\033[93m5. 🔥 SIMULADO (10 QUESTÕES ALEATÓRIAS)\033[0m")
+    
+    op = input("\nEscolha: ")
+    if op == "4": return
+    if op == "5":
+        executar_simulado_10(id_user)
+        return
+        
+    mapa = {"1": "FGV", "2": "SELECON", "3": "FCC"}
+    banca = mapa.get(op)
+    if not banca: return
+
     try:
         with conectar() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SELECT * FROM questoes WHERE materia = %s AND banca ILIKE %s ORDER BY RANDOM() LIMIT 1", (materia, f'%{banca}%'))
-                q = cur.fetchone()
+            with conn.cursor() as cur:
+                # Busca as matérias agora no banco limpo
+                cur.execute("SELECT DISTINCT materia FROM questoes WHERE banca ILIKE %s", (f'%{banca}%',))
+                materias = [row[0] for row in cur.fetchall()]
         
-        if q:
+        if not materias:
+            print(f"⚠️ Nenhuma questão encontrada."); time.sleep(2); return
+
+        limpar_tela()
+        print(f"=== 📚 DISCIPLINAS ({banca}) ===")
+        for i, m in enumerate(materias, 1): 
+            print(f"{i}. {m.upper()}")
+        
+        m_sel = int(input("\nEscolha a matéria: ")) - 1
+        # Inicia o estudo sequencial profissional
+        executar_estudo_sequencial(materias[m_sel], banca, id_user)
+        
+    except Exception as e:
+        print(f"Erro no painel: {e}"); time.sleep(2)
+
+def executar_estudo_sequencial(materia, banca, id_user):
+    try:
+        with conectar() as conn:
+            # RealDictCursor permite ler as colunas pelo nome: q['ano'], q['cargo']...
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, banca, enunciado, alternativas, gabarito,
+                           orgao, ano, cargo
+                    FROM questoes 
+                    WHERE materia = %s AND banca ILIKE %s 
+                    ORDER BY id ASC
+                """, (materia, f'%{banca}%'))
+                todas = cur.fetchall()
+        
+        if not todas:
+            print("⚠️ Nenhuma questão disponível."); time.sleep(2); return
+
+        total = len(todas)
+        for num, q in enumerate(todas, 1):
             limpar_tela()
-            print(f"\033[1;34mBANCA: {q['banca']} | MATÉRIA: {materia}\033[0m\n")
-            print(f"{q['enunciado']}\n")
-            opts = json.loads(q['alternativas']) if isinstance(q['alternativas'], str) else q['alternativas']
-            for k, v in (opts.items() if isinstance(opts, dict) else enumerate(opts)):
-                print(f" {k}) {v}")
             
-            res = input("\nResposta: ").strip().upper()
+            # --- CABEÇALHO COM METADADOS ---
+            print(f"\033[1;33m{'='*80}")
+            print(f" QUESTÃO {num} de {total} | BANCA: {q['banca'].upper()}")
+            # Mostra Órgão, Ano e Cargo se existirem
+            meta = [f"ÓRGÃO: {q['orgao']}" if q['orgao'] else "", 
+                    f"ANO: {q['ano']}" if q['ano'] else "", 
+                    f"CARGO: {q['cargo']}" if q['cargo'] else ""]
+            meta_filtrada = [m for m in meta if m]
+            if meta_filtrada:
+                print(f" {' | '.join(meta_filtrada)}")
+            print(f"{'='*80}\033[0m")
+            
+            # ENUNCIADO
+            print(f"\n{q['enunciado']}\n")
+            
+            # ALTERNATIVAS
+            opts = q['alternativas'] if isinstance(q['alternativas'], dict) else json.loads(q['alternativas'])
+            for letra, texto in sorted(opts.items()):
+                print(f" \033[1;34m{letra})\033[0m {texto}")
+            
+            res = input("\n\033[1;32mSua resposta (ou 'SAIR'): \033[0m").strip().upper()
+            
+            if res == "SAIR": break
+            
+            # VALIDAÇÃO E PONTUAÇÃO
             if res == str(q['gabarito']).upper():
-                print("\033[92m✨ ACERTOU!\033[0m")
+                print("\033[92m✅ ACERTOU!\033[0m")
                 with conectar() as conn:
-                    conn.cursor().execute("UPDATE usuarios SET pontuacao_total = pontuacao_total + 1 WHERE id = %s", (id_user,))
+                    with conn.cursor() as cur_up:
+                        cur_up.execute("UPDATE usuarios SET pontuacao_total = pontuacao_total + 1 WHERE id = %s", (id_user,))
                     conn.commit()
             else:
-                print(f"\033[91m❌ ERROU! Gabarito: {q['gabarito']}\033[0m")
+                print(f"\033[91m❌ ERRADO! Gabarito: {q['gabarito']}\033[0m")
                 with conectar() as conn:
-                    conn.cursor().execute("INSERT INTO historico_erros (usuario_id, materia, questao_enunciado) VALUES (%s, %s, %s)", (id_user, materia, q['enunciado']))
+                    with conn.cursor() as cur_err:
+                        cur_err.execute("""
+                            INSERT INTO historico_erros (usuario_id, materia, questao_enunciado) 
+                            VALUES (%s, %s, %s)
+                        """, (id_user, materia, q['enunciado']))
                     conn.commit()
-            input("\nENTER para continuar...")
-    except Exception as e: print(f"Erro: {e}"); time.sleep(2)
+            
+            # Pula para a próxima sem voltar ao menu
+            input("\nENTER para a PRÓXIMA questão...")
 
-# === 4. FUNÇÕES DE DESEMPENHO (OPÇÕES 2, 3, 4) ===
+    except Exception as e:
+        print(f"Erro na execução: {e}"); time.sleep(2)
+
+
+def executar_estudo_sequencial(materia, banca, id_user):
+    try:
+        with conectar() as conn:
+            # RealDictCursor permite acessar os dados pelo nome da coluna: q['cargo']
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # SELECT trazendo os campos individuais. Se for nulo, traz vazio ''
+                cur.execute("""
+                    SELECT id, 
+                           UPPER(banca) as banca_nome,
+                           COALESCE(orgao, '') as orgao, 
+                           COALESCE(ano::text, '') as ano, 
+                           COALESCE(cargo, '') as cargo,
+                           enunciado, alternativas, gabarito 
+                    FROM questoes 
+                    WHERE materia = %s AND banca ILIKE %s 
+                    ORDER BY id ASC
+                """, (materia, f'%{banca}%'))
+                todas = cur.fetchall()
+        
+        if not todas:
+            print("⚠️ Nenhuma questão encontrada nesta matéria."); time.sleep(2); return
+
+        total = len(todas)
+        for num, q in enumerate(todas, 1):
+            limpar_tela()
+            
+            # === CABEÇALHO LIMPO (SÓ PREENCHE SE TIVER DADO) ===
+            print(f"\033[1;33m{'='*85}")
+            print(f" QUESTÃO {num} de {total} | BANCA: {q['banca_nome']}")
+            
+            # Monta a linha de metadados dinamicamente
+            meta_info = []
+            if q['orgao']: meta_info.append(f"ÓRGÃO: {q['orgao']}")
+            if q['ano']: meta_info.append(f"ANO: {q['ano']}")
+            if q['cargo']: meta_info.append(f"CARGO: {q['cargo']}")
+            
+            # Só imprime a linha se houver pelo menos um metadado
+            if meta_info:
+                print(f" {' | '.join(meta_info)}")
+            
+            print(f"{'='*85}\033[0m")
+            
+            # EXIBIÇÃO DO ENUNCIADO
+            print(f"\n{q['enunciado']}\n")
+            
+            # TRATAMENTO DAS ALTERNATIVAS
+            opts = q['alternativas']
+            if isinstance(opts, str):
+                opts = json.loads(opts)
+            
+            # Exibe ordenado por letra (A, B, C...)
+            for letra, texto in sorted(opts.items()):
+                print(f" \033[1;34m{letra})\033[0m {texto}")
+            
+            # INPUT DE RESPOSTA
+            res = input("\n\033[1;32mSua resposta (ou 'SAIR'): \033[0m").strip().upper()
+            
+            if res == "SAIR": 
+                break
+            
+            # VALIDAÇÃO E ATUALIZAÇÃO DO BANCO
+            if res == str(q['gabarito']).upper():
+                print("\033[92m✅ ACERTOU!\033[0m")
+                with conectar() as conn:
+                    with conn.cursor() as cur_up:
+                        cur_up.execute("UPDATE usuarios SET pontuacao_total = pontuacao_total + 1 WHERE id = %s", (id_user,))
+                    conn.commit()
+            else:
+                print(f"\033[91m❌ ERRADO! Gabarito: {q['gabarito']}\033[0m")
+                with conectar() as conn:
+                    with conn.cursor() as cur_err:
+                        cur_err.execute("""
+                            INSERT INTO historico_erros (usuario_id, materia, questao_enunciado) 
+                            VALUES (%s, %s, %s)
+                        """, (id_user, materia, q['enunciado']))
+                    conn.commit()
+            
+            # PRÓXIMA QUESTÃO
+            input("\nPressione ENTER para a PRÓXIMA questão...")
+
+    except Exception as e:
+        print(f"Erro na execução: {e}"); time.sleep(3)
+
+
+
+
+# === 4. FUNÇÕES DE DESEMPENHO ===
 
 def ver_ranking():
     limpar_tela()
@@ -204,16 +381,12 @@ def mostrar_grafico(id_user, nome):
         
         mats = [d[0] for d in dados]
         qtds = [d[1] for d in dados]
-        
         plt.figure(figsize=(10, 6))
         plt.bar(mats, qtds, color='#e63946', edgecolor='black')
-        
-        # Rotaciona os nomes das matérias em 45 graus para não embolar
         plt.xticks(rotation=45, ha='right') 
-        
         plt.title(f"DESEMPENHO POR MATÉRIA: {nome.upper()}")
         plt.ylabel("Quantidade de Erros")
-        plt.grid(axis='y', linestyle='--', alpha=0.7) # Adiciona uma grade leve
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
         plt.tight_layout() 
         plt.show()
     except Exception as e:
@@ -241,10 +414,8 @@ def main():
             with conn.cursor() as cur:
                 cur.execute("SELECT pontuacao_total FROM usuarios WHERE id = %s", (id_user,))
                 p_fetch = cur.fetchone()
-                # Garante que pegamos o valor numérico da tupla
                 pontos = p_fetch[0] if p_fetch else 0
 
-        # Novo Cabeçalho conforme solicitado
         print("\n" + "="*50)
         status_label = "ADMIN" if nivel == 'admin' else "ALUNO"
         print(f"📝 CONCURSEIRO: {nome_user.upper()} | 🛡️ STATUS: {status_label}")
